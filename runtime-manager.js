@@ -2,6 +2,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const logger = require('./utils/logger');
+const express = require('express');
 
 class RuntimeManager {
     constructor() {
@@ -13,9 +14,47 @@ class RuntimeManager {
         this.isShuttingDown = false;
         this.healthCheckInterval = null;
         this.maxRestartWindow = 300000; // 5 minutes
+        this.webServer = null;
+        this.botStatus = 'starting';
+    }
+
+    // Start immediate health server for Railway
+    startHealthServer() {
+        const app = express();
+        const port = process.env.PORT || 3000;
+        
+        // Health check endpoint for Railway
+        app.get('/health', (req, res) => {
+            const status = {
+                status: 'ok',
+                botStatus: this.botStatus,
+                uptime: process.uptime(),
+                timestamp: new Date().toISOString(),
+                restarts: this.restartCount
+            };
+            res.json(status);
+        });
+        
+        // Root endpoint
+        app.get('/', (req, res) => {
+            res.json({
+                message: 'Discord Bot Runtime Manager',
+                status: this.botStatus,
+                uptime: process.uptime()
+            });
+        });
+        
+        this.webServer = app.listen(port, '0.0.0.0', () => {
+            logger.info(`🌐 Health server started on port ${port} for Railway compatibility`);
+        });
     }
 
     start() {
+        // Start health server immediately for Railway
+        if (!this.webServer) {
+            this.startHealthServer();
+        }
+        
         if (this.isShuttingDown) return;
         
         const now = Date.now();
@@ -27,14 +66,17 @@ class RuntimeManager {
         
         if (this.restartCount >= this.maxRestarts) {
             logger.error(`Maximum restart limit (${this.maxRestarts}) reached. Waiting before next attempt...`);
+            this.botStatus = 'failed';
             setTimeout(() => {
                 this.restartCount = 0;
+                this.botStatus = 'restarting';
                 this.start();
             }, this.maxRestartWindow);
             return;
         }
 
         logger.info(`Starting Discord bot (attempt ${this.restartCount + 1}/${this.maxRestarts})${this.restartCount > 0 ? ' - Auto-restart after process exit' : ' - Initial start'}`);
+        this.botStatus = 'starting';
         
         // Spawn the main bot process
         this.childProcess = spawn('node', ['index.js'], {
@@ -48,6 +90,7 @@ class RuntimeManager {
 
         this.childProcess.on('error', (error) => {
             logger.error('Failed to start child process:', error);
+            this.botStatus = 'error';
             this.handleRestart();
         });
 
@@ -55,6 +98,7 @@ class RuntimeManager {
             if (this.isShuttingDown) return;
             
             logger.warn(`Bot process exited with code ${code}, signal ${signal} - Triggering auto-restart`);
+            this.botStatus = 'crashed';
             this.handleRestart();
         });
 
@@ -62,8 +106,17 @@ class RuntimeManager {
             if (this.isShuttingDown) return;
             
             logger.warn(`Bot process closed with code ${code}, signal ${signal}`);
+            this.botStatus = 'stopped';
             this.handleRestart();
         });
+
+        // Monitor for successful bot startup
+        setTimeout(() => {
+            if (this.childProcess && !this.childProcess.killed) {
+                this.botStatus = 'running';
+                logger.info('✅ Discord bot appears to be running successfully');
+            }
+        }, 30000); // Wait 30 seconds for bot to initialize
 
         this.lastRestartTime = now;
         this.restartCount++;
@@ -75,6 +128,7 @@ class RuntimeManager {
     handleRestart() {
         if (this.isShuttingDown) return;
         
+        this.botStatus = 'restarting';
         logger.info(`Bot process ended, restarting in ${this.restartDelay / 1000} seconds... (Enhanced 24/7 runtime recovery)`);
         
         // Clean up current process
