@@ -23,6 +23,8 @@ class RuntimeManager {
         const app = express();
         const port = process.env.PORT || 3000;
         
+        logger.info(`🌐 Starting health server on port ${port} for Railway deployment`);
+        
         // Health check endpoint for Railway
         app.get('/health', (req, res) => {
             const status = {
@@ -45,7 +47,9 @@ class RuntimeManager {
         });
         
         this.webServer = app.listen(port, '0.0.0.0', () => {
-            logger.info(`🌐 Health server started on port ${port} for Railway compatibility`);
+            logger.info(`✅ Health server listening on 0.0.0.0:${port} - Railway health checks ready`);
+        }).on('error', (err) => {
+            logger.error(`❌ Health server failed to start on port ${port}:`, err);
         });
     }
 
